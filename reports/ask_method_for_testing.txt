@@ -1,0 +1,40 @@
+def ask(self, question, top_k=3, min_similarity=0.08):
+        """
+        Retrieve evidence and answer supported business questions.
+
+        This service uses local structured data and TF-IDF retrieval.
+        It does not call Gemini or another external LLM.
+        """
+
+        question_key = self.route_question(question)
+
+        retrieved = self.retriever.retrieve(
+            question,
+            top_k=top_k,
+            min_similarity=min_similarity
+        )
+
+        if question_key is None:
+            if retrieved.empty:
+                answer = (
+                    "I couldn't find relevant RetentionAI knowledge "
+                    "to answer that question."
+                )
+                source = "no_relevant_data"
+            else:
+                answer = (
+                    "Knowledge was retrieved, but this question is "
+                    "not yet supported by a structured answer handler."
+                )
+                source = "RAG_retrieval_only"
+        else:
+            answer = self._answer(question_key)
+            source = "local_structured_data_plus_RAG"
+
+        return {
+            "question": question,
+            "question_key": question_key,
+            "answer": answer,
+            "response_source": source,
+            "retrieved_documents": retrieved,
+        }

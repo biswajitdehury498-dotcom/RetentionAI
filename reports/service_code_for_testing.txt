@@ -1,0 +1,287 @@
+
+from pathlib import Path
+
+import pandas as pd
+
+try:
+    from .rag_retriever import RetentionAIRetriever
+except ImportError:
+    from rag_retriever import RetentionAIRetriever
+
+
+class RetentionAIAssistant:
+    """Local business intelligence service for RetentionAI."""
+
+    def __init__(self, processed_dir=None):
+        if processed_dir is None:
+            project_root = Path(__file__).resolve().parents[1]
+            processed_dir = project_root / "data" / "processed"
+
+        self.processed_dir = Path(processed_dir)
+
+        self.risk_segments = self._load_csv(
+            "retentionai_risk_segment_summary.csv"
+        )
+
+        self.high_risk_customers = self._load_csv(
+            "retentionai_high_risk_examples.csv"
+        )
+
+        self.high_value_customers = self._load_csv(
+            "retentionai_high_value_high_risk_examples.csv"
+        )
+
+        self.critical_risk_customers = self._load_csv(
+            "retentionai_critical_risk_customers.csv"
+        )
+
+        self.campaign_priorities = self._load_csv(
+            "retentionai_campaign_execution_priorities.csv"
+        )
+
+        self.retriever = RetentionAIRetriever(
+            self.processed_dir
+            / "retentionai_rag_knowledge_chunks.csv"
+        )
+
+    def _load_csv(self, filename):
+        """Load a required CSV file with a clear error message."""
+
+        path = self.processed_dir / filename
+
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Required RetentionAI data file not found: {path}"
+            )
+
+        return pd.read_csv(path)
+
+    @staticmethod
+    def route_question(question):
+        """Route a natural-language question to a supported handler."""
+
+        if not isinstance(question, str) or not question.strip():
+            raise ValueError("Question must be a non-empty string.")
+
+        text = question.lower()
+
+        if (
+            "critical-risk" in text
+            or "critical risk" in text
+            or (
+                ("poor review" in text or "bad review" in text)
+                and any(
+                    term in text
+                    for term in [
+                        "canceled", "cancelled", "unavailable"
+                    ]
+                )
+            )
+        ):
+            return "critical_risk"
+
+        if (
+            (
+                ("high-value" in text or "high value" in text)
+                and any(
+                    term in text
+                    for term in [
+                        "high risk", "high-risk",
+                        "retention risk", "risk", "monetary"
+                    ]
+                )
+            )
+            or "highest historical monetary" in text
+        ):
+            return "high_value_high_risk"
+
+        if any(
+            term in text
+            for term in [
+                "highest retention risk",
+                "highest-risk customer",
+                "highest risk",
+                "warning signals"
+            ]
+        ):
+            return "highest_risk_customers"
+
+        if any(
+            term in text
+            for term in ["campaign", "prioritize", "retention action"]
+        ):
+            return "campaign_priorities"
+
+        if any(
+            term in text
+            for term in [
+                "risk segment",
+                "risk distribution",
+                "risk levels",
+                "repeat-purchase risk"
+            ]
+        ):
+            return "risk_segments"
+
+        return None
+
+    @staticmethod
+    def _number(value, default=0.0):
+        """Safely convert a value to a number."""
+
+        converted = pd.to_numeric(value, errors="coerce")
+        return default if pd.isna(converted) else float(converted)
+
+    def _answer_risk_segments(self):
+        lines = []
+
+        for _, row in self.risk_segments.iterrows():
+            lines.append(
+                f"{row['risk_level']}: "
+                f"{int(row['customer_count']):,} customers "
+                f"({self._number(row['customer_percentage']):.2f}%)."
+            )
+
+        return "\n".join(lines)
+
+    def _answer_highest_risk(self):
+        data = self.high_risk_customers.copy()
+
+        data["retention_risk"] = pd.to_numeric(
+            data["retention_risk"], errors="coerce"
+        )
+
+        data = data.dropna(subset=["retention_risk"])
+
+        if data.empty:
+            return "No usable customer-risk records were found."
+
+        row = data.sort_values(
+            "retention_risk", ascending=False
+        ).iloc[0]
+
+        return (
+            f"Highest-risk customer in the exported evaluation "
+            f"examples: {row['customer_unique_id']}.\n"
+            f"Retention risk: {row['retention_risk']:.2%}.\n"
+            f"Predicted repeat-purchase probability: "
+            f"{self._number(row['repeat_purchase_probability']):.2%}.\n"
+            f"Historical frequency: {self._number(row.get('frequency')):g}.\n"
+            f"Average review score: "
+            f"{self._number(row.get('average_review_score')):.1f}/5.\n"
+            f"Recency at the snapshot: "
+            f"{self._number(row.get('recency_days')):g} days.\n"
+            f"Delivery-success rate: "
+            f"{self._number(row.get('delivery_success_rate')):.1%}.\n"
+            "These are historical indicators and model estimates, "
+            "not proof of churn or causation."
+        )
+
+    def _answer_high_value(self):
+        data = self.high_value_customers.copy()
+
+        data["monetary"] = pd.to_numeric(
+            data["monetary"], errors="coerce"
+        )
+
+        data = data.dropna(subset=["monetary"])
+
+        if data.empty:
+            return "No usable monetary-value records were found."
+
+        data = data.sort_values("monetary", ascending=False)
+        row = data.iloc[0]
+
+        return (
+            f"Highest historical monetary value in the exported "
+            f"high-value/high-risk dataset: "
+            f"{row['customer_unique_id']}.\n"
+            f"Historical monetary value: {row['monetary']:.2f} "
+            f"(dataset units; currency not assumed).\n"
+            f"Retention risk: "
+            f"{self._number(row.get('retention_risk')):.2%}.\n"
+            f"Predicted repeat-purchase probability: "
+            f"{self._number(row.get('repeat_purchase_probability')):.2%}."
+        )
+
+    def _answer_critical_risk(self):
+        count = len(self.critical_risk_customers)
+
+        return (
+            f"There are {count:,} customers in the exported "
+            "critical-risk segment. The project's criteria combine "
+            "high retention risk, poor reviews, and canceled or "
+            "unavailable orders. This is a prioritization segment, "
+            "not a list of confirmed churned customers."
+        )
+
+    def _answer_campaigns(self):
+        data = self.campaign_priorities.copy()
+
+        data = data.sort_values(
+            "average_priority_score", ascending=False
+        )
+
+        return "\n".join(
+            f"{row['campaign_priority']} priority — "
+            f"{row['recommended_action']}: "
+            f"{int(row['customer_count']):,} customers."
+            for _, row in data.iterrows()
+        )
+
+    def _answer(self, question_key):
+        handlers = {
+            "risk_segments": self._answer_risk_segments,
+            "highest_risk_customers": self._answer_highest_risk,
+            "high_value_high_risk": self._answer_high_value,
+            "critical_risk": self._answer_critical_risk,
+            "campaign_priorities": self._answer_campaigns,
+        }
+
+        handler = handlers.get(question_key)
+
+        if handler is None:
+            return None
+
+        return handler()
+
+    def ask(self, question, top_k=3, min_similarity=0.08):
+        """
+        Retrieve evidence and answer supported business questions.
+
+        This service uses local structured data and TF-IDF retrieval.
+        It does not call Gemini or another external LLM.
+        """
+
+        question_key = self.route_question(question)
+
+        retrieved = self.retriever.retrieve(
+            question,
+            top_k=top_k,
+            min_similarity=min_similarity
+        )
+
+        if question_key is None:
+            if retrieved.empty:
+                answer = (
+                    "I couldn't find relevant RetentionAI knowledge "
+                    "to answer that question."
+                )
+                source = "no_relevant_data"
+            else:
+                answer = (
+                    "Knowledge was retrieved, but this question is "
+                    "not yet supported by a structured answer handler."
+                )
+                source = "RAG_retrieval_only"
+        else:
+            answer = self._answer(question_key)
+            source = "local_structured_data_plus_RAG"
+
+        return {
+            "question": question,
+            "question_key": question_key,
+            "answer": answer,
+            "response_source": source,
+            "retrieved_documents": retrieved,
+        }

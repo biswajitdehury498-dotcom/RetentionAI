@@ -1,0 +1,42 @@
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment variables
+.env
+
+# Model files
+models/*.pkl
+models/*.joblib
+
+# Data
+data/*.csv
+data/*.xlsx
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.spyproject/
+
+# OS
+.DS_Store
+Thumbs.db
+*.pyc
+
+# Olist datasets and generated data
+data/raw/
+data/processed/
+data/**/*.csv
+data/**/*.xlsx
+
+# Additional model artifacts
+models/**/*.pkl
+models/**/*.joblib
